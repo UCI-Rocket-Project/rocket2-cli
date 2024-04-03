@@ -6,6 +6,7 @@ import select
 import socket
 import queue
 import shlex
+import struct
 
 main_data_lock = threading.Lock()
 
@@ -38,8 +39,12 @@ def cmd_input(args):
     # Assuming ECU is server.
     if args[0] == 'add':
         addr, port = args[1].split(':')
+        try:
+            t = args[2].trim()
+        except IndexError as e:
+            t = 'gse'
         c = socket.create_connection((addr, int(port)))
-        main_state.conns.append(c)
+        main_state.conns.append((c, {'type':t}))
         main_state.read_fds.append(c.fileno())
         return  True
 
@@ -74,6 +79,124 @@ ECU_COMMAND_TUPLE_FORMAT = [
     'solenoidStatePv2',
     'solenoidStateVent'
 ]
+'''
+struct gseData {
+    uint32_t timestamp;
+    bool igniterArmed;
+    bool igniter1Continuity;
+    bool igniter2Continuity;
+    float supplyVoltage1;
+    float supplyVoltage2;
+    float solenoidCurrentGn2Fill;
+    float solenoidCurrentGn2Vent;
+    float solenoidCurrentMvasFill;
+    float solenoidCurrentMvasVent;
+    float solenoidCurrentMvas;
+    float solenoidCurrentLoxFill;
+    float solenoidCurrentLoxVent;
+    float solenoidCurrentLngFill;
+    float solenoidCurrentLngVent;
+    float temperatureLox;
+    float temperatureLng;
+    float pressureGn2;
+};
+'''
+GSE_DATA_STRUCT_FORMAT = 'I???ffffffffffffff'
+GSE_DATA_TUPLE_FORMAT = [
+    'timestamp',
+    'igniterArmed',
+    'igniter1Continuity',
+    'igniter2Continuity',
+    'supplyVoltage1',
+    'supplyVoltage2',
+    'solenoidCurrentGn2Fill',
+    'solenoidCurrentGn2Vent',
+    'solenoidCurrentMvasFill',
+    'solenoidCurrentMvasVent',
+    'solenoidCurrentMvas',
+    'solenoidCurrentLoxFill',
+    'solenoidCurrentLoxVent',
+    'solenoidCurrentLngFill',
+    'solenoidCurrentLngVent',
+    'temperatureLox',
+    'temperatureLng',
+    'pressureGn2'
+]
+'''
+struct ecuData {
+    uint32_t timestamp;
+    float packetRssi;
+    float packetLoss;
+    float supplyVoltage;
+    float batteryVoltage;
+    float solenoidCurrentCopvVent;
+    float solenoidCurrentPv1;
+    float solenoidCurrentPv2;
+    float solenoidCurrentVent;
+    float temperatureCopv;
+    float pressureCopv;
+    float pressureLox;
+    float pressureLng;
+    float pressureInjectorLox;
+    float pressureInjectorLng;
+    float angularVelocityX;
+    float angularVelocityY;
+    float angularVelocityZ;
+    float accelerationX;
+    float accelerationY;
+    float accelerationZ;
+    float magneticFieldX;
+    float magneticFieldY;
+    float magneticFieldZ;
+    float temperature;
+    float altitude;
+    float ecefPositionX;
+    float ecefPositionY;
+    float ecefPositionZ;
+    float ecefPositionAccuracy;
+    float ecefVelocityX;
+    float ecefVelocityY;
+    float ecefVelocityZ;
+    float ecefVelocityAccuracy;
+};
+'''
+ECU_DATA_STRUCT_FORMAT = 'Ifffffffffffffffffffffffffffffffff'
+ECU_DATA_TUPLE_FORMAT = [
+    'timestamp',
+    'packetRssi',
+    'packetLoss',
+    'supplyVoltage',
+    'batteryVoltage',
+    'solenoidCurrentCopvVent',
+    'solenoidCurrentPv1',
+    'solenoidCurrentPv2',
+    'solenoidCurrentVent',
+    'temperatureCopv',
+    'pressureCopv',
+    'pressureLox',
+    'pressureLng',
+    'pressureInjectorLox',
+    'pressureInjectorLng',
+    'angularVelocityX',
+    'angularVelocityY',
+    'angularVelocityZ',
+    'accelerationX',
+    'accelerationY',
+    'accelerationZ',
+    'magneticFieldX',
+    'magneticFieldY',
+    'magneticFieldZ',
+    'temperature',
+    'altitude',
+    'ecefPositionX',
+    'ecefPositionY',
+    'ecefPositionZ',
+    'ecefPositionAccuracy',
+    'ecefVelocityX',
+    'ecefVelocityY',
+    'ecefVelocityZ',
+    'ecefVelocityAccuracy'
+]
 def cmd_command(args):
     if args[0] == 'gse':
         if args[1] == 'setall':
@@ -82,7 +205,7 @@ def cmd_command(args):
                 print("Too many or too few arguments in:", values)
             data = struct.pack('??????????', *values)
             for f in main_state.write_fds:
-                for c in main_state.conns:
+                for c,_ in main_state.conns:
                     if c.fileno() == f:
                         c.send(data)
         elif args[1] == 'set':
@@ -93,7 +216,7 @@ def cmd_command(args):
                 idx = GSE_COMMAND_TUPLE_FORMAT.index(k)
             except ValueError:
                 print(f"Could not find field {k}")
-            values = 
+            # values = 
 
 
     elif args[0] == 'ecu':
@@ -103,7 +226,7 @@ def cmd_command(args):
                 print("Too many or too few arguments in:", values)
             data = struct.pack('????', *values)
             for f in main_state.write_fds:
-                for c in main_state.conns:
+                for c,_ in main_state.conns:
                     if c.fileno() == f:
                         c.send(data)
 
@@ -123,9 +246,10 @@ class MainState:
             "input" : (cmd_input, "Manage input connections for telemetry data"),
             "output" : (cmd_output, "Manage output connections for commands"),
             "log" : (cmd_log, "Log specific selected messages to a file"),
-            "monitor" : (cmd_monitor, "Monitor specific selected messages by outputting to stdout")
+            "monitor" : (cmd_monitor, "Monitor specific selected messages by outputting to stdout"),
             "command" : (cmd_command, "Send command")
         }
+        self.gse_values = dict()
 
 
     def process_input(self, inp):
@@ -157,22 +281,37 @@ def close_process(exctype, value, traceback):
         main_data_lock.release()
     sys.__excepthook__(exctype, value, traceback)
 
-def process_telem(conn):
+def process_telem(conn, attrs):
     # Helpful reference code for connection handling
     # https://github.com/ArduPilot/pymavlink/blob/f7a2f29607f7f2a72499a3fc19e555aaace51ba8/mavutil.py#L1217
     d = conn.recv(1024)
     if len(d) == 0:
         print("EOF on TCP socket")
-        main_state.conns.pop(main_state.conns.index(conn))
+
+        for i, x in enumerate(main_state.conns):
+            if x[0]== conn:
+                break
+        main_state.conns.pop(i)
         return None, False
     else:
-        return d, True
+        print("Recv'd len", len(d))
+        print("Recv'd",d)
+        if attrs['type'] == 'gse':
+            try:
+                v = struct.unpack(GSE_DATA_STRUCT_FORMAT, d)
+            except struct.error as e:
+                print("Failed to decode message")
+                print(e)
+            res = dict()
+            for k,v in zip(GSE_DATA_TUPLE_FORMAT, v):
+                res[k] = v
+        return res, True
     
 
 def main_thread():
     while True:
         if main_thread_end_evt.is_set():
-            for conn in main_state.conns:
+            for conn,_ in main_state.conns:
                 conn.close()
             try:
                 main_data_lock.release()
@@ -195,11 +334,14 @@ def main_thread():
             continue
 
         for fd in r_ready:
-            for c in main_state.conns:
+            for c,attrs in main_state.conns:
                 if c.fileno() == fd:
-                    data, status = process_telem(c)
+                    data, status = process_telem(c, attrs)
+                    print(data)
+                    if attrs['type'] == 'gse':
+                        main_state.gse_values = data
                     if not status:
-                        main_state.read_fds = [s.fileno() for s in main_state.conns]
+                        main_state.read_fds = [s.fileno() for s,_ in main_state.conns]
                     else:
                         print(data)
 
