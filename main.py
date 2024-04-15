@@ -8,65 +8,23 @@ import queue
 import shlex
 import struct
 import zlib
-
-
-main_data_lock = threading.Lock()
-
-main_thread_lock = threading.Lock()
-main_thread = None
-main_thread_end_evt = threading.Event()
-main_state = None 
-
-# OUr software is quite simmilar to mavporxy. We can study its code
-# for proper error handling techniques for various compoenets that
-# we use so that we can have higher quality code.
-# We stole the idea about having 2 threads and their roles from there.
-
-def shlex_quotes(value):
-    '''see http://stackoverflow.com/questions/6868382/python-shlex-split-ignore-single-quotes'''
-    lex = shlex.shlex(value)
-    lex.quotes = '"'
-    lex.whitespace_split = True
-    lex.commenters = ''
-    return list(lex)
-
-
-def cmd_status(args):
-    if len(args) != 0:
-        print("No arguments necessary")
-    # Print socket states
-
-def cmd_input(args):
-    #TODO: Am I accepting connections or is the ECU.
-    # Assuming ECU is server.
-    if args[0] == 'add':
-        addr, port = args[1].split(':')
-        try:
-            t = args[2].trim()
-        except IndexError as e:
-            t = 'gse'
-        c = socket.create_connection((addr, int(port)))
-        main_state.conns.append((c, {'type':t}))
-        main_state.read_fds.append(c.fileno())
-        return  True
-
-def cmd_output(args):
-    if args[0] == 'add':
-        addr, port = args[1].split(':')
-        try:
-            t = args[2].trim()
-        except IndexError as e:
-            t = 'gse'
-        c = socket.create_connection((addr, int(port)))
-        main_state.conns.append((c, {'type':t}))
-        main_state.write_fds.append(c.fileno())
-        return True
-
-def cmd_log(args):
-    pass
-
-def cmd_monitor(args):
-    pass
+import time
+from rich import get_console
+from rich.console import Console, ConsoleRenderable, RenderableType, RenderHook
+from rich.control import Control
+from rich.file_proxy import FileProxy
+from rich.jupyter import JupyterMixin
+from rich.live_render import LiveRender, VerticalOverflowMethod
+from rich.screen import Screen
+from rich.text import Text
+from rich.align import Align
+from rich.live import Live as Live
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.live import Live
+import getchlib as getch
 
 # Refer:https://github.com/UCI-Rocket-Project/rocket2-overview?tab=readme-ov-file#gse-command-packet
 GSE_COMMAND_TUPLE_FORMAT = ['igniterFire'
@@ -257,6 +215,98 @@ GSE_COMMAND_TUPLE_FORMAT = [
 ]
 GSE_COMMAND_STRUCT_FORMAT = '????????????I'
 
+main_data_lock = threading.Lock()
+
+main_thread_lock = threading.Lock()
+main_thread = None
+main_thread_end_evt = threading.Event()
+main_state = None 
+
+# OUr software is quite simmilar to mavporxy. We can study its code
+# for proper error handling techniques for various compoenets that
+# we use so that we can have higher quality code.
+# We stole the idea about having 2 threads and their roles from there.
+
+def shlex_quotes(value):
+    '''see http://stackoverflow.com/questions/6868382/python-shlex-split-ignore-single-quotes'''
+    lex = shlex.shlex(value)
+    lex.quotes = '"'
+    lex.whitespace_split = True
+    lex.commenters = ''
+    return list(lex)
+
+
+def cmd_status(args):
+    if len(args) != 0:
+        print("No arguments necessary")
+    # Print socket states
+
+def cmd_input(args):
+    #TODO: Am I accepting connections or is the ECU.
+    # Assuming ECU is server.
+    if args[0] == 'add':
+        addr, port = args[1].split(':')
+        try:
+            t = args[2].trim()
+        except IndexError as e:
+            t = 'gse'
+        c = socket.create_connection((addr, int(port)))
+        main_state.conns.append((c, {'type':t}))
+        main_state.read_fds.append(c.fileno())
+        return  True
+
+def cmd_output(args):
+    if args[0] == 'add':
+        addr, port = args[1].split(':')
+        try:
+            t = args[2].trim()
+        except IndexError as e:
+            t = 'gse'
+        c = socket.create_connection((addr, int(port)))
+        main_state.conns.append((c, {'type':t}))
+        main_state.write_fds.append(c.fileno())
+        return True
+
+def cmd_log(args):
+    pass
+
+
+def monitor_thread(keys, d):
+   console = Console()
+   with Live(console=console) as live_table:
+       while True:
+           table = Table(title="Values")
+           table.add_column("Name")
+           table.add_column("Value")
+           for k in keys:
+               table.add_row(k,f"{d[k]:.4f}")
+           live_table.update(Align.center(table))
+           ch = getch.getkey(False, tout=1)
+           if ch == 'q':
+               return
+
+def cmd_monitor(args):
+    if args[0] == 'gse':
+        keys = [k.strip() for k in args[1].split(',')]
+        for k in keys:
+            if k not in main_state.gse_values:
+                print(f"Key {k} not found")
+                return
+        table_thread = threading.Thread(target=(lambda: monitor_thread(keys, main_state.gse_values)))
+        table_thread.start()
+    elif args[1] == 'ecu':
+        keys = [k.strip() for k in args[1].split(',')]
+        for k in keys:
+            if k not in main_state.gse_values:
+                print(f"Key {k} not found")
+                return
+        table_thread = threading.Thread(target=(lambda: monitor_thread(keys, main_state.ecu_values)))
+        table_thread.start()
+
+
+
+        # ECU_COMMAND_TUPLE_FORMAT.index
+
 def cmd_command(args):
     if args[0] == 'gse':
         if args[1] == 'setall':
@@ -372,12 +422,10 @@ class MainState:
 
 
 def close_process(exctype, value, traceback):
-    print("Closing")
     main_thread_end_evt.set()
     main_thread.join(2)
     if main_data_lock.locked():
         main_data_lock.release()
-    sys.__excepthook__(exctype, value, traceback)
 
 def process_telem(conn, attrs):
     # Helpful reference code for connection handling
@@ -392,8 +440,6 @@ def process_telem(conn, attrs):
         main_state.conns.pop(i)
         return None, False
     else:
-        print("Recv'd len", len(d))
-        print("Recv'd",d)
         if attrs['type'] == 'gse':
             try:
                 v = struct.unpack(GSE_DATA_STRUCT_FORMAT, d)
@@ -438,15 +484,13 @@ def main_thread():
             for c,attrs in main_state.conns:
                 if c.fileno() == fd:
                     data, status = process_telem(c, attrs)
-                    print(data)
+                    # print(data)
                     if attrs['type'] == 'gse':
                         main_state.gse_values = data
                     if not status:
                         main_state.read_fds = [s.fileno() for s,_ in main_state.conns]
-                    else:
-                        print(data)
 
-@click.command()
+# @click.command()
 def main():
     global main_state
     main_state = MainState()
@@ -454,11 +498,13 @@ def main():
     main_thread = threading.Thread(target=main_thread)
     main_thread.start()
     sys.excepthook = close_process
+    # try:
     while True:
         cmd = input('>')
         main_state.input_queue.put(cmd.rstrip())
-
-
+    # except click.Abort as abort:
+    #     print("Aborting")
+    #     close_process()
 
 
 if __name__ == '__main__':
