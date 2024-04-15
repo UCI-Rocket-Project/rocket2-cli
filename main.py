@@ -51,6 +51,13 @@ def cmd_input(args):
 def cmd_output(args):
     if args[0] == 'add':
         addr, port = args[1].split(':')
+        try:
+            t = args[2].trim()
+        except IndexError as e:
+            t = 'gse'
+        c = socket.create_connection((addr, int(port)))
+        main_state.conns.append((c, {'type':t}))
+        main_state.write_fds.append(c.fileno())
         return True
 
 def cmd_log(args):
@@ -197,16 +204,70 @@ ECU_DATA_TUPLE_FORMAT = [
     'ecefVelocityZ',
     'ecefVelocityAccuracy'
 ]
+'''
+struct ecuCommand {
+    bool solenoidStateCopvVent;
+    bool solenoidStatePv1;
+    bool solenoidStatePv2;
+    bool solenoidStateVent;
+    uint32_t crc;
+};
+'''
+ECU_COMMAND_TUPLE_FORMAT = [
+    'solenoidStateCopvVent',
+    'solenoidStatePv1',
+    'solenoidStatePv2',
+    'solenoidStateVent',
+    'crc'
+]
+ECU_COMMAND_STRUCT_FORMAT = '????I'
+'''
+struct gseCommand {
+    bool igniter0Fire;
+    bool igniter1Fire;
+    bool alarm;
+    bool solenoidStateGn2Fill;
+    bool solenoidStateGn2Vent;
+    bool solenoidStateMvasFill;
+    bool solenoidStateMvasVent;
+    bool solenoidStateMvas;
+    bool solenoidStateLoxFill;
+    bool solenoidStateLoxVent;
+    bool solenoidStateLngFill;
+    bool solenoidStateLngVent;
+    uint32_t crc;
+};
+'''
+GSE_COMMAND_TUPLE_FORMAT = [
+    'igniter0Fire',
+    'igniter1Fire',
+    'alarm',
+    'solenoidStateGn2Fill',
+    'solenoidStateGn2Vent',
+    'solenoidStateMvasFill',
+    'solenoidStateMvasVent',
+    'solenoidStateMvas',
+    'solenoidStateLoxFill',
+    'solenoidStateLoxVent',
+    'solenoidStateLngFill',
+    'solenoidStateLngVent',
+    'crc'
+]
+GSE_COMMAND_STRUCT_FORMAT = '????????????I'
+
 def cmd_command(args):
     if args[0] == 'gse':
         if args[1] == 'setall':
+            print("gse.setall")
             values = [int(x) for x in args[2].split(',')]
-            if len(values) != 10:
+            if len(values) != 12:
                 print("Too many or too few arguments in:", values)
-            data = struct.pack('??????????', *values)
+            values.append(0)
+            data = struct.pack(GSE_COMMAND_STRUCT_FORMAT, *values)
             for f in main_state.write_fds:
-                for c,_ in main_state.conns:
-                    if c.fileno() == f:
+                for c,attrs in main_state.conns:
+                    if c.fileno() == f and attrs['type'] == 'gse':
+                        print("Sending")
                         c.send(data)
         elif args[1] == 'set':
             # Need to track/query state to implement this otherwise all others will
@@ -222,12 +283,14 @@ def cmd_command(args):
     elif args[0] == 'ecu':
         if args[1] == 'setall':
             values = [int(x) for x in args[2].split(',')]
+            crc = 0
+            values.append(crc)
             if len(values) != 4:
                 print("Too many or too few arguments in:", values)
-            data = struct.pack('????', *values)
+            data = struct.pack(ECU_COMMAND_STRUCT_FORMAT, *values)
             for f in main_state.write_fds:
-                for c,_ in main_state.conns:
-                    if c.fileno() == f:
+                for c,attrs in main_state.conns:
+                    if c.fileno() == f and attrs['type'] == 'ecu':
                         c.send(data)
 
 
@@ -317,9 +380,12 @@ def main_thread():
                 main_data_lock.release()
             except RuntimeError:
                 pass
+            exit()
+
         while not main_state.input_queue.empty():
             inp = main_state.input_queue.get(block=False)
             main_state.process_input(inp)
+
         r_ready = []
         w_ready = []
         try:
