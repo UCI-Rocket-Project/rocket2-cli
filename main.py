@@ -7,6 +7,8 @@ import socket
 import queue
 import shlex
 import struct
+import zlib
+
 
 main_data_lock = threading.Lock()
 
@@ -264,10 +266,13 @@ def cmd_command(args):
                 print("Too many or too few arguments in:", values)
             values.append(0)
             data = struct.pack(GSE_COMMAND_STRUCT_FORMAT, *values)
+            crc = zlib.crc32(data[:len(data)-4])
+            values[-1] = crc
+            data = struct.pack(GSE_COMMAND_STRUCT_FORMAT, *values)
+            main_state.gse_state = dict(zip(GSE_COMMAND_TUPLE_FORMAT, values))
             for f in main_state.write_fds:
                 for c,attrs in main_state.conns:
                     if c.fileno() == f and attrs['type'] == 'gse':
-                        print("Sending")
                         c.send(data)
         elif args[1] == 'set':
             # Need to track/query state to implement this otherwise all others will
@@ -277,23 +282,51 @@ def cmd_command(args):
                 idx = GSE_COMMAND_TUPLE_FORMAT.index(k)
             except ValueError:
                 print(f"Could not find field {k}")
+            main_state.gse_state[k] = int(v)
+            values = [main_state.gse_state[name] for name in GSE_COMMAND_TUPLE_FORMAT]
+            data = struct.pack(GSE_COMMAND_STRUCT_FORMAT, *values)
+            crc = zlib.crc32(data[:len(data)-4])
+            values[-1] = crc
+            data = struct.pack(GSE_COMMAND_STRUCT_FORMAT, *values)
+            for f in main_state.write_fds:
+                for c,attrs in main_state.conns:
+                    if c.fileno() == f and attrs['type'] == 'gse':
+                        c.send(data)
             # values = 
-
-
     elif args[0] == 'ecu':
         if args[1] == 'setall':
+#            print('')
             values = [int(x) for x in args[2].split(',')]
-            crc = 0
-            values.append(crc)
             if len(values) != 4:
                 print("Too many or too few arguments in:", values)
+            values.append(0)
+            data = struct.pack(ECU_COMMAND_STRUCT_FORMAT, *values)
+            crc = zlib.crc32(data[:len(data)-4])
+            values[-1] = crc
+            data = struct.pack(ECU_COMMAND_STRUCT_FORMAT, *values)
+            main_state.ecu_state = dict(zip(ECU_COMMAND_TUPLE_FORMAT, values))
+            for f in main_state.write_fds:
+                for c,attrs in main_state.conns:
+                    if c.fileno() == f and attrs['type'] == 'ecu':
+                        c.send(data)
+        elif args[1] == 'set':
+            #
+            #
+            k,v = args[2].split('=')
+            try:
+                idx = GSE_COMMAND_TUPLE_FORMAT.index(k)
+            except ValueError:
+                print(f"Could not find field {k}")
+            main_state.ecu_state[k] = int(v)
+            values = [main_state.ecu_state[name] for name in ECU_COMMAND_TUPLE_FORMAT]
+            data = struct.pack(ECU_COMMAND_STRUCT_FORMAT, *values)
+            crc = zlib.crc32(data[:len(data)-4])
+            values[-1] = crc
             data = struct.pack(ECU_COMMAND_STRUCT_FORMAT, *values)
             for f in main_state.write_fds:
                 for c,attrs in main_state.conns:
                     if c.fileno() == f and attrs['type'] == 'ecu':
                         c.send(data)
-
-
 
 
 
@@ -313,6 +346,8 @@ class MainState:
             "command" : (cmd_command, "Send command")
         }
         self.gse_values = dict()
+        self.gse_state = dict()
+        self.ecu_state = dict()
 
 
     def process_input(self, inp):
