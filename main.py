@@ -9,6 +9,7 @@ import shlex
 import struct
 import zlib
 import time
+from collections import defaultdict
 from rich import get_console
 from rich.console import Console, ConsoleRenderable, RenderableType, RenderHook
 from rich.control import Control
@@ -222,6 +223,44 @@ main_thread = None
 main_thread_end_evt = threading.Event()
 main_state = None 
 
+
+class msgparser:
+    '''
+    This is a streaming message parser
+    Inspiration: mavproxy class mavfile
+    '''
+    def __init__(self, msg_struct_format, msg_names):
+        self.msg_struct_format = msg_struct_format
+        self.msg_names = msg_names
+        self.buf = bytearray()
+        self.buf_index = 0
+
+    def parse_msgs(self,buf):
+        '''
+        Give input bytes to get some msgs
+        '''
+        ret = []
+        self.buf.extend(buf)
+        while True:
+            m = self.decode()
+            if m is None:
+                return ret
+            else:
+                ret.append(m)
+
+    def decode(self):
+        '''
+        Decode the first message from buf
+        '''
+        if len(self.buf) == 0:
+            return None
+        if len(self.buf) < struct.calcsize(self.msg_struct_format):
+            return None
+
+
+
+
+
 # OUr software is quite simmilar to mavporxy. We can study its code
 # for proper error handling techniques for various compoenets that
 # we use so that we can have higher quality code.
@@ -279,11 +318,12 @@ def monitor_thread(keys, d):
            table.add_column("Name")
            table.add_column("Value")
            for k in keys:
-               table.add_row(k,f"{d[k]:.4f}")
+               table.add_row(k,f"{main_state.gse_values[k]:.4f}")
            live_table.update(Align.center(table))
-           ch = getch.getkey(False, tout=1)
-           if ch == 'q':
-               return
+           time.sleep(0.25)
+           # ch = getch.getkey(False, tout=1)
+           # if ch == 'q':
+           #     return
 
 def cmd_monitor(args):
     if args[0] == 'gse':
@@ -341,6 +381,7 @@ def cmd_command(args):
             for f in main_state.write_fds:
                 for c,attrs in main_state.conns:
                     if c.fileno() == f and attrs['type'] == 'gse':
+                        print('send gse')
                         c.send(data)
             # values = 
     elif args[0] == 'ecu':
@@ -396,7 +437,7 @@ class MainState:
             "command" : (cmd_command, "Send command")
         }
         self.gse_values = dict()
-        self.gse_state = dict()
+        self.gse_state = defaultdict((lambda : 0))
         self.ecu_state = dict()
 
 
@@ -442,12 +483,13 @@ def process_telem(conn, attrs):
     else:
         if attrs['type'] == 'gse':
             try:
-                v = struct.unpack(GSE_DATA_STRUCT_FORMAT, d)
+                val = struct.unpack(GSE_DATA_STRUCT_FORMAT, d[:64])
             except struct.error as e:
                 print("Failed to decode message")
+                print(d)
                 print(e)
             res = dict()
-            for k,v in zip(GSE_DATA_TUPLE_FORMAT, v):
+            for k,v in zip(GSE_DATA_TUPLE_FORMAT, val):
                 res[k] = v
         return res, True
     
